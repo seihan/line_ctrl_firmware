@@ -1,8 +1,3 @@
-#include <ssl_client.h>
-#include <WiFiClientSecure.h>
-
-#include <analogWrite.h>
-
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
@@ -12,26 +7,37 @@
 #define MOTORLEFTCHAR_UUID  "bf3e592d-063b-4b25-884e-5814640054e9" // MotorLeft
 #define POWERCHAR_UUID      "6cc05bc7-d9da-4b6e-9bfa-65e6c0b5b9d3" // MotorMain
 
-// L298N - H-Bridge DC Motor driver:
-//   ENA <- PIN D6
-//   IN1 <- Pin D7
-//   IN2 <- Pin D8
-//   ENB <- PIN D9
-//   IN3 <- PIN D10
-//   IN4 <- PIN D11
+/*
+  IBT-2 Motor Control Board driven by Arduino.
 
-#include <Wire.h>
+  Speed and direction controlled by a potentiometer attached to analog input 0.
+  One side pin of the potentiometer (either one) to ground; the other side pin to +5V
 
-enum Pins {
-  M1_ENABLE = 6,
-  M1_FWD = 7,
-  M1_RWD = 8,
-  M2_ENABLE = 9,
-  M2_FWD = 10,
-  M2_RWD = 11,
+  Connection to the IBT-2 board:
+  IBT-2 pin 1 (RPWM) to esp32-ttgo pin 27(PWM)
+  IBT-2 pin 2 (LPWM) to esp32-ttgo pin 25(PWM)
+  IBT-2 pins 4 (R_EN), 3 (L_EN), 5V (VCC) to esp32-ttgo 5V pin
+  IBT-2 pin GND (GND) to esp32-ttgo GND
+  IBT-2 pins 5 (R_IS) and 6 (L_IS) not connected
+*/
+
+// PWM
+
+enum Pwm {
+  FREQ = 10000,
+  RESOLUTION = 8,
+  M1_FWD_CH = 0,
+  M1_BWD_CH = 1,
+  M2_FWD_CH = 2,
+  M2_BWD_CH = 3,
 };
 
-char motorRight[8] = {}; //for incoming value
+enum Pins {
+  M1_RPWM = 27,
+  M1_LPWM = 25,
+  M2_RPWM = 16,
+  M2_LPWM = 17,
+};
 
 String mRight = "";
 String mLeft = "";
@@ -43,23 +49,39 @@ struct state {
   int16_t speed;
 } motors[2];
 
-void set_speed(int16_t new_speed)
+void set_speed_forward_m1(int16_t new_speed)
 {
-  set_speed_m1(new_speed);
-  set_speed_m2(new_speed);
-}
-
-void set_speed_m1(int16_t new_speed)
-{
+  motors[0].forward = true;
   motors[0].speed = new_speed;
-  //analogWrite(M1_ENABLE, new_speed);
+  ledcWrite(M1_BWD_CH, 0);
+  ledcWrite(M1_FWD_CH, new_speed);
 }
 
-void set_speed_m2(int16_t new_speed)
+void set_speed_backward_m1(int16_t new_speed)
 {
-  motors[1].speed = new_speed;
-  //analogWrite(M2_ENABLE, new_speed);
+  motors[0].forward = false;
+  motors[0].speed = new_speed;
+  ledcWrite(M1_FWD_CH, 0);
+  ledcWrite(M1_BWD_CH, new_speed);
 }
+
+void set_speed_forward_m2(int16_t new_speed)
+{
+
+  motors[1].forward = true;
+  motors[1].speed = new_speed;
+  ledcWrite(M2_BWD_CH, 0);
+  ledcWrite(M2_FWD_CH, new_speed);
+}
+
+void set_speed_backward_m2(int16_t new_speed)
+{
+  motors[1].forward = false;
+  motors[1].speed = new_speed;
+  ledcWrite(M2_FWD_CH, 0);
+  ledcWrite(M2_BWD_CH, new_speed);
+}
+
 
 // Full STOP
 void full_stop()
@@ -69,53 +91,14 @@ void full_stop()
 }
 
 void full_stop_m1() {
-  digitalWrite(M1_FWD, LOW);
-  digitalWrite(M1_RWD, LOW);
-
-  set_speed_m1(0);
-
-  motors[0].forward = true;
+  ledcWrite(M1_FWD_CH, 0);
+  ledcWrite(M1_BWD_CH, 0);
 }
 
 void full_stop_m2() {
-  digitalWrite(M2_FWD, LOW);
-  digitalWrite(M2_RWD, LOW);
-
-  set_speed_m2(0);
-
-  motors[1].forward = true;
+  ledcWrite(M2_FWD_CH, 0);
+  ledcWrite(M2_BWD_CH, 0);
 }
-
-// Reverse the direction
-void reverse_m1()
-{
-  motors[0].forward ^= 0x1;
-
-  // CAUTION: Always pull one output to LOW first! Never set both directions HIGH!
-  if (motors[0].forward) {
-    digitalWrite(M1_RWD, LOW);
-    digitalWrite(M1_FWD, HIGH);
-  } else {
-    digitalWrite(M1_FWD, LOW);
-    digitalWrite(M1_RWD, HIGH);
-  }
-
-}
-
-void reverse_m2()
-{
-  motors[1].forward ^= 0x1;
-
-  // CAUTION: Always pull one output to LOW first! Never set both directions HIGH!
-  if (motors[1].forward) {
-    digitalWrite(M2_RWD, LOW);
-    digitalWrite(M2_FWD, HIGH);
-  } else {
-    digitalWrite(M2_FWD, LOW);
-    digitalWrite(M2_RWD, HIGH);
-  }
-}
-
 // BLE
 
 bool deviceConnected = false;
@@ -145,7 +128,13 @@ class MotorRightCallbacks: public BLECharacteristicCallbacks {
           mRight += (char)value[i];
         }
         Serial.println("Motor right " + mRight);
+        int value = mRight.toInt();
         mRight = "";
+        if (value < 0) {
+          set_speed_backward_m1(value * -1);
+        } else {
+          set_speed_forward_m1(value);
+        }
       }
     }
 };
@@ -159,7 +148,13 @@ class MotorLeftCallbacks: public BLECharacteristicCallbacks {
           mLeft += (char)value[i];
         }
         Serial.println("Motor left " + mLeft);
+        int value = mLeft.toInt();
         mLeft = "";
+        if (value < 0) {
+          set_speed_backward_m2(value * -1);
+        } else {
+          set_speed_forward_m2(value);
+        }
       }
     }
 };
@@ -183,13 +178,16 @@ void setup()
   Serial.begin(115200);
   Serial.println("Setup motor driver...");
   // motor driver
-  //  pinMode(M1_ENABLE, OUTPUT);
-  //  pinMode(M1_FWD, OUTPUT);
-  //  pinMode(M1_RWD, OUTPUT);
-  //
-  //  pinMode(M2_ENABLE, OUTPUT);
-  //  pinMode(M2_FWD, OUTPUT);
-  //  pinMode(M2_RWD, OUTPUT);
+  pinMode(22, OUTPUT);
+  digitalWrite(22, HIGH);
+  ledcSetup(M1_FWD_CH, FREQ, RESOLUTION);
+  ledcSetup(M1_FWD_CH, FREQ, RESOLUTION);
+  ledcSetup(M2_BWD_CH, FREQ, RESOLUTION);
+  ledcSetup(M2_BWD_CH, FREQ, RESOLUTION);
+  ledcAttachPin(M1_RPWM, M1_FWD_CH);
+  ledcAttachPin(M1_LPWM, M1_BWD_CH);
+  ledcAttachPin(M2_RPWM, M2_FWD_CH);
+  ledcAttachPin(M2_LPWM, M2_BWD_CH);
 
   full_stop();
 
@@ -205,20 +203,17 @@ void setup()
   Serial.println("Setup bluetooth characteristics...");
   BLECharacteristic *pMotorRightChar = pService->createCharacteristic(
                                          MOTORRIGHTCHAR_UUID,
-                                         //BLECharacteristic::PROPERTY_READ |
                                          BLECharacteristic::PROPERTY_WRITE
                                        );
 
 
   BLECharacteristic *pMotorLeftChar = pService->createCharacteristic(
                                         MOTORLEFTCHAR_UUID,
-                                        //BLECharacteristic::PROPERTY_READ |
                                         BLECharacteristic::PROPERTY_WRITE
                                       );
 
   BLECharacteristic *pPowerChar = pService->createCharacteristic(
                                     POWERCHAR_UUID,
-                                    //BLECharacteristic::PROPERTY_READ |
                                     BLECharacteristic::PROPERTY_WRITE
                                   );
 
@@ -256,55 +251,80 @@ void loop()
       speed = min(0xff, motors[0].speed + 10);
       Serial.print("Motor 1 Go Faster: ");
       Serial.println(speed);
-      set_speed_m1(speed);
+      set_speed_forward_m1(speed);
       break;
-    case 'z':
+    case 'y':
       speed = max(0, motors[0].speed - 10);
       Serial.print("Motor 1 Go Slower: ");
       Serial.println(speed);
-      set_speed_m1(speed);
+      set_speed_forward_m1(speed);
       break;
     case 'a':
       Serial.println("Motor 1 Full STOP!");
       full_stop_m1();
       break;
-    case '1':
-      reverse_m1();
-      Serial.print("Motor 1 Engage! Going ");
-      Serial.println(motors[0].forward ? "FORWARD" : "BACKWARDS");
-      break;
     case 'w':
-      speed = min(0xff, motors[1].speed + 10);
-      Serial.print("Motor 2 Go Faster: ");
+      speed = min(0xff, motors[0].speed + 10);
+      Serial.print("Motor 1 Backward Go Faster: ");
       Serial.println(speed);
-      set_speed_m2(speed);
+      set_speed_backward_m1(speed);
       break;
     case 'x':
-      speed = max(0, motors[1].speed - 10);
-      Serial.print("Motor 2 Go Slower: ");
+      speed = max(0, motors[0].speed - 10);
+      Serial.print("Motor 1 Backward Go Slower: ");
       Serial.println(speed);
-      set_speed_m2(speed);
+      set_speed_backward_m1(speed);
       break;
-    case 's':
+    case 'e':
+      speed = min(0xff, motors[0].speed + 10);
+      Serial.print("Motor 2 Go Faster: ");
+      Serial.print("Motor 2 Engage! Going ");
+      Serial.println(motors[1].forward ? "FORWARD" : "BACKWARDS");
+
+      Serial.println(speed);
+      set_speed_forward_m2(speed);
+      break;
+    case 'd':
       Serial.println("Motor 2 Full STOP!");
       full_stop_m2();
       break;
-    case '2':
-      reverse_m2();
-      Serial.print("Motor 2 Engage! Going ");
-      Serial.println(motors[1].forward ? "FORWARD" : "BACKWARDS");
+    case 'c':
+      speed = max(0, motors[0].speed - 10);
+      Serial.print("Motor 1 Go Slower: ");
+      Serial.println(speed);
+      set_speed_forward_m2(speed);
+      break;
+    case 'r':
+      speed = min(0xff, motors[0].speed + 10);
+      Serial.print("Motor 2 Backward Go Faster: ");
+      Serial.println(speed);
+      set_speed_backward_m2(speed);
+      break;
+    case 'v':
+      speed = max(0, motors[0].speed - 10);
+      Serial.print("Motor 2 Backward Go Slower: ");
+      Serial.println(speed);
+      set_speed_backward_m2(speed);
       break;
     case 'f':
       Serial.println("Motor 1 Full Speed Forward!");
       motors[0].forward = false;
-      reverse_m1();
-      set_speed_m1(255);
+      set_speed_forward_m1(255);
       break;
     case 'g':
-      Serial.println("Motor 2 Full Speed Forward!");
+      Serial.println("Motor 1 Full Speed Backwards!");
       motors[1].forward = false;
-      reverse_m2();
-      set_speed_m2(255);
+      set_speed_backward_m1(255);
+      break;
+    case 'h':
+      Serial.println("Motor 2 Full Speed Forward!");
+      motors[0].forward = false;
+      set_speed_forward_m2(255);
+      break;
+    case 'j':
+      Serial.println("Motor 2 Full Speed Backwards!");
+      motors[1].forward = false;
+      set_speed_backward_m2(255);
       break;
     default:
       break;
