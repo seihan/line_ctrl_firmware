@@ -121,19 +121,15 @@ class MyServerCallbacks: public BLEServerCallbacks {
 
 class MotorRightCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string value = pCharacteristic->getValue();
-
+      String value = pCharacteristic->getValue().c_str();
       if (value.length() > 0) {
-        for (int i = 0; i < value.length(); i++) {
-          mRight += (char)value[i];
-        }
-        Serial.println("Motor right " + mRight);
-        int value = mRight.toInt();
-        mRight = "";
-        if (value < 0) {
-          set_speed_backward_m1(value * -1);
+        Serial.print("Motor right ");
+        Serial.println(value);
+        int intValue = value.toInt();
+        if (intValue < 0) {
+          set_speed_backward_m1(-intValue);
         } else {
-          set_speed_forward_m1(value);
+          set_speed_forward_m1(intValue);
         }
       }
     }
@@ -141,19 +137,15 @@ class MotorRightCallbacks: public BLECharacteristicCallbacks {
 
 class MotorLeftCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string value = pCharacteristic->getValue();
-
+      String value = pCharacteristic->getValue().c_str();
       if (value.length() > 0) {
-        for (int i = 0; i < value.length(); i++) {
-          mLeft += (char)value[i];
-        }
-        Serial.println("Motor left " + mLeft);
-        int value = mLeft.toInt();
-        mLeft = "";
-        if (value < 0) {
-          set_speed_backward_m2(value * -1);
+        Serial.print("Motor left ");
+        Serial.println(value);
+        int intValue = value.toInt();
+        if (intValue < 0) {
+          set_speed_backward_m2(-intValue);
         } else {
-          set_speed_forward_m2(value);
+          set_speed_forward_m2(intValue);
         }
       }
     }
@@ -161,14 +153,11 @@ class MotorLeftCallbacks: public BLECharacteristicCallbacks {
 
 class PowerCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-      std::string value = pCharacteristic->getValue();
-
-      if (value.length() > 0) {
-        for (int i = 0; i < value.length(); i++) {
-          mPower += (char)value[i];
-        }
-        Serial.println("Motor power " + mPower);
-        mPower = "";
+      String value = pCharacteristic->getValue().c_str();
+      if (value.length() > 0) {       
+        Serial.print("Motor power ");
+        Serial.println(value);
+        int intValue = value.toInt();
       }
     }
 };
