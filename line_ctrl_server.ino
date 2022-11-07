@@ -5,11 +5,13 @@
 
 #include<VescUart.h>
 
-#define SERVICE_UUID        "3a39152a-6371-4730-8e24-31be298cf059"
-#define MOTORRIGHTCHAR_UUID "74454618-2b9a-4c9a-bc20-b351dc7bd269" // MotorRight
-#define MOTORLEFTCHAR_UUID  "bf3e592d-063b-4b25-884e-5814640054e9" // MotorLeft
-#define POWERCHAR_RX_UUID   "6cc05bc7-d9da-4b6e-9bfa-65e6c0b5b9d3" // MotorMain
-#define POWERCHAR_TX_UUID   "0058545f-5f5f-5f52-4148-435245574f50" // POWERCHAR____TX
+#define SERVICE_UUID        "0058545f-5f5f-5f52-4148-435245574f50"
+#define MOTORRIGHTCHAR_UUID "0058545f-5f5f-5f52-4148-435245574f51" // MotorRight
+#define MOTORLEFTCHAR_UUID  "0058545f-5f5f-5f52-4148-435245574f52" // MotorLeft
+#define STEERINGCHAR_UUID   "0058545f-5f5f-5f52-4148-435245574f53"
+#define POWERCHAR_RX_UUID   "0058545f-5f5f-5f52-4148-435245574f54" // MotorMain
+#define POWERCHAR_TX_UUID   "0058545f-5f5f-5f52-4148-435245574f55" // POWERCHAR____TX
+
 
 /*
   IBT-2 Motor Control Board driven by Arduino.
@@ -29,17 +31,20 @@
 VescUart vesc;
 
 struct dataPackage {
-  float tempFET;
-  float tempMotor;
   float avgMotorCurrent;
   float avgInputCurrent;
   float dutyCycleNow;
-  long rpm;
+  float rpm;
   float inpVoltage;
   float ampHours;
   float ampHoursCharged;
+  float wattHours;
+  float wattHoursCharged;
   long tachometer;
   long tachometerAbs;
+  float tempMosfet;
+  float tempMotor;
+  float pidPos;
 } msg;
 
 // PWM
@@ -85,7 +90,6 @@ void set_speed_backward_m1(int16_t new_speed)
 
 void set_speed_forward_m2(int16_t new_speed)
 {
-
   motors[1].forward = true;
   motors[1].speed = new_speed;
   ledcWrite(M2_BWD_CH, 0);
@@ -170,6 +174,24 @@ class MotorLeftCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+class SteeringCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      String value = pCharacteristic->getValue().c_str();
+      if (value.length() > 0) {
+        Serial.print("Steering ");
+        Serial.println(value);
+        int intValue = value.toInt();
+        if (intValue < 0) {
+          set_speed_backward_m1(-intValue);
+          set_speed_forward_m2(-intValue);
+        } else {
+          set_speed_forward_m1(intValue);
+          set_speed_backward_m2(intValue);
+        }
+      }
+    }
+};
+
 class PowerCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       String value = pCharacteristic->getValue().c_str();
@@ -177,6 +199,17 @@ class PowerCallbacks: public BLECharacteristicCallbacks {
         Serial.print("Motor power ");
         Serial.println(value);
         int intValue = value.toInt();
+        if (intValue < 0) {
+          vesc.setCurrent(0);
+          if (-intValue < 10) { // limit to 10 A
+            vesc.setBrakeCurrent(-intValue);
+          }
+        } else {
+          vesc.setBrakeCurrent(0);
+          if (intValue < 10) {
+            vesc.setCurrent(-intValue);
+          }
+        }
       }
     }
 };
@@ -184,14 +217,21 @@ class PowerCallbacks: public BLECharacteristicCallbacks {
 // VESC
 void get_vesc_values() {
   if ( vesc.getVescValues() ) {
-    Serial.println(vesc.data.rpm);
-    Serial.println(vesc.data.inpVoltage);
-    Serial.println(vesc.data.ampHours);
-    Serial.println(vesc.data.tachometerAbs);
-
-  }
-  else
-  {
+    msg.avgMotorCurrent =  vesc.data.avgMotorCurrent;
+    msg.avgInputCurrent =  vesc.data.avgInputCurrent;
+    msg.dutyCycleNow =  vesc.data.dutyCycleNow;
+    msg.rpm =  vesc.data.rpm;
+    msg.inpVoltage =  vesc.data.inpVoltage;
+    msg.ampHours =  vesc.data.ampHours;
+    msg.ampHoursCharged =  vesc.data.ampHoursCharged;
+    // msg.wattHours =  vesc.data.wattHours;
+    // msg.wattHoursCharged =  vesc.data.wattHoursCharged;
+    msg.tachometer =  vesc.data.tachometer;
+    msg.tachometerAbs =  vesc.data.tachometerAbs;
+    // msg.tempMosfet =  vesc.data.tempMosfet;
+    msg.tempMotor =  vesc.data.tempMotor;
+    // msg.pidPos =  vesc.data.pidPos;
+  } else {
     Serial.println("Failed to get data!");
   }
 }
@@ -247,6 +287,12 @@ void setup()
                                         BLECharacteristic::PROPERTY_WRITE
                                       );
 
+  BLECharacteristic *pSteeringChar = pService->createCharacteristic(
+                                       STEERINGCHAR_UUID,
+                                       BLECharacteristic::PROPERTY_WRITE
+                                     );
+
+
   BLECharacteristic *pPowerCharRx = pService->createCharacteristic(
                                       POWERCHAR_RX_UUID,
                                       BLECharacteristic::PROPERTY_WRITE
@@ -261,6 +307,7 @@ void setup()
   Serial.println("Setup bluetooth callbacks...");
   pMotorRightChar->setCallbacks(new MotorRightCallbacks());
   pMotorLeftChar->setCallbacks(new MotorLeftCallbacks());
+  pSteeringChar->setCallbacks(new SteeringCallbacks());
   pPowerCharRx->setCallbacks(new PowerCallbacks());
   pPowerCharTx->addDescriptor(new BLE2902());
   pService->start();
@@ -278,9 +325,6 @@ uint32_t value = 0;
 
 void loop()
 {
-  msg.tempFET = 0;
-  msg.tempMotor = count;
-  count++;
   // Get vesc values via uart and send them via ble
   get_vesc_values();
   if (deviceConnected) {
