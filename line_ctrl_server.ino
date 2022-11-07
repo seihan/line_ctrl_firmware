@@ -1,11 +1,15 @@
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
+#include <BLE2902.h>
+
+#include<VescUart.h>
 
 #define SERVICE_UUID        "3a39152a-6371-4730-8e24-31be298cf059"
 #define MOTORRIGHTCHAR_UUID "74454618-2b9a-4c9a-bc20-b351dc7bd269" // MotorRight
 #define MOTORLEFTCHAR_UUID  "bf3e592d-063b-4b25-884e-5814640054e9" // MotorLeft
-#define POWERCHAR_UUID      "6cc05bc7-d9da-4b6e-9bfa-65e6c0b5b9d3" // MotorMain
+#define POWERCHAR_RX_UUID   "6cc05bc7-d9da-4b6e-9bfa-65e6c0b5b9d3" // MotorMain
+#define POWERCHAR_TX_UUID   "0058545f-5f5f-5f52-4148-435245574f50" // POWERCHAR____TX
 
 /*
   IBT-2 Motor Control Board driven by Arduino.
@@ -21,6 +25,23 @@
   IBT-2 pins 5 (R_IS) and 6 (L_IS) not connected
 */
 
+// Vesc
+VescUart vesc;
+
+struct dataPackage {
+  float tempFET;
+  float tempMotor;
+  float avgMotorCurrent;
+  float avgInputCurrent;
+  float dutyCycleNow;
+  long rpm;
+  float inpVoltage;
+  float ampHours;
+  float ampHoursCharged;
+  long tachometer;
+  long tachometerAbs;
+} msg;
+
 // PWM
 
 enum Pwm {
@@ -35,13 +56,10 @@ enum Pwm {
 enum Pins {
   M1_RPWM = 27,
   M1_LPWM = 25,
-  M2_RPWM = 16,
-  M2_LPWM = 17,
+  M2_RPWM = 19,
+  M2_LPWM = 33,
 };
 
-String mRight = "";
-String mLeft = "";
-String mPower = "";
 
 // Just keep current movement settings in global variables
 struct state {
@@ -102,6 +120,7 @@ void full_stop_m2() {
 // BLE
 
 bool deviceConnected = false;
+BLECharacteristic * pPowerCharTx = NULL;
 
 class MyServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -154,7 +173,7 @@ class MotorLeftCallbacks: public BLECharacteristicCallbacks {
 class PowerCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
       String value = pCharacteristic->getValue().c_str();
-      if (value.length() > 0) {       
+      if (value.length() > 0) {
         Serial.print("Motor power ");
         Serial.println(value);
         int intValue = value.toInt();
@@ -162,9 +181,36 @@ class PowerCallbacks: public BLECharacteristicCallbacks {
     }
 };
 
+// VESC
+void get_vesc_values() {
+  if ( vesc.getVescValues() ) {
+    Serial.println(vesc.data.rpm);
+    Serial.println(vesc.data.inpVoltage);
+    Serial.println(vesc.data.ampHours);
+    Serial.println(vesc.data.tachometerAbs);
+
+  }
+  else
+  {
+    Serial.println("Failed to get data!");
+  }
+}
+
+void send_vesc_values(dataPackage package) {
+  int len = sizeof(package);
+  if ( (len > 0) && deviceConnected ) {
+    pPowerCharTx->setValue((uint8_t*)&package, len);
+    pPowerCharTx->notify();
+  }
+}
+
 void setup()
 {
   Serial.begin(115200);
+  Serial2.begin(115200);
+  while (!Serial2);
+
+  vesc.setSerialPort(&Serial2);
   Serial.println("Setup motor driver...");
   // motor driver
   pinMode(22, OUTPUT);
@@ -201,27 +247,48 @@ void setup()
                                         BLECharacteristic::PROPERTY_WRITE
                                       );
 
-  BLECharacteristic *pPowerChar = pService->createCharacteristic(
-                                    POWERCHAR_UUID,
-                                    BLECharacteristic::PROPERTY_WRITE
-                                  );
+  BLECharacteristic *pPowerCharRx = pService->createCharacteristic(
+                                      POWERCHAR_RX_UUID,
+                                      BLECharacteristic::PROPERTY_WRITE
+                                    );
+
+  pPowerCharTx = pService->createCharacteristic(
+                   POWERCHAR_TX_UUID,
+                   BLECharacteristic::PROPERTY_NOTIFY |
+                   BLECharacteristic::PROPERTY_INDICATE
+                 );
 
   Serial.println("Setup bluetooth callbacks...");
   pMotorRightChar->setCallbacks(new MotorRightCallbacks());
   pMotorLeftChar->setCallbacks(new MotorLeftCallbacks());
-  pPowerChar->setCallbacks(new PowerCallbacks());
-
+  pPowerCharRx->setCallbacks(new PowerCallbacks());
+  pPowerCharTx->addDescriptor(new BLE2902());
   pService->start();
 
   Serial.println("Bluetooth start advertising...");
   BLEAdvertising *pAdvertising = pServer->getAdvertising();
   pAdvertising->start();
-
+  pPowerCharTx->setValue((uint8_t*)&msg, sizeof(msg));
+  pPowerCharTx->notify();
   Serial.println("Setup ready.");
 }
 
+int count = 0;
+uint32_t value = 0;
+
 void loop()
 {
+  msg.tempFET = 0;
+  msg.tempMotor = count;
+  count++;
+  // Get vesc values via uart and send them via ble
+  get_vesc_values();
+  if (deviceConnected) {
+    send_vesc_values(msg);
+    delay(3);
+  }
+
+
   // Read input
   int cmd = 0;
   if (Serial.available()) {
