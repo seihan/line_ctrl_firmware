@@ -52,17 +52,17 @@ struct dataPackage {
 enum Pwm {
   FREQ = 10000,
   RESOLUTION = 8,
-  M1_FWD_CH = 0,
-  M1_BWD_CH = 1,
-  M2_FWD_CH = 2,
-  M2_BWD_CH = 3,
+  M1_FWD_CH = 35,
+  M1_BWD_CH = 34,
+  M2_FWD_CH = 19,
+  M2_BWD_CH = 5,
 };
 
 enum Pins {
-  M1_RPWM = 27,
-  M1_LPWM = 25,
-  M2_RPWM = 19,
-  M2_LPWM = 33,
+  M1_RPWM = 33,
+  M1_LPWM = 26,
+  M2_RPWM = 23,
+  M2_LPWM = 18,
 };
 
 
