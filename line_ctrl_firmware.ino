@@ -12,6 +12,35 @@
 #define POWERCHAR_RX_UUID "0058545f-5f5f-5f52-4148-435245574f54"  // MotorMain
 #define POWERCHAR_TX_UUID "0058545f-5f5f-5f52-4148-435245574f55"  // POWERCHAR____TX
 
+enum identifier {
+  VESC_DATA_1 = 0,
+  VESC_DATA_2 = 1,
+  VESC_DATA_3 = 2,
+  VESC_DATA_4 = 3,
+};
+
+struct vesc_data_floats {
+  float value1;
+  float value2;
+  float value3;
+  float value4;
+};
+
+struct vesc_data_mixed {
+  float value1;
+  int value2;
+  int value3;
+  float value4;
+};
+
+// Data Packages for VESC data that fits the 20 byte notify payload.
+struct notify_package {
+  identifier id;
+  union {
+    vesc_data_floats floats;
+    vesc_data_mixed mixed;
+  };
+};
 
 /*
   IBT-2 Motor Control Board driven by Arduino.
@@ -29,8 +58,6 @@
 
 // Vesc
 VescUart vesc;
-
-uint32_t value = 0;
 
 // PWM
 
@@ -92,6 +119,7 @@ void set_speed_backward_m2(int16_t new_speed) {
 void full_stop() {
   full_stop_m1();
   full_stop_m2();
+  vesc.setDuty(0);
 }
 
 void full_stop_m1() {
@@ -114,6 +142,7 @@ class MyServerCallbacks : public BLEServerCallbacks {
   };
 
   void onDisconnect(BLEServer *pServer) {
+    full_stop();
     deviceConnected = false;
     BLEAdvertising *pAdvertising = pServer->getAdvertising();
     pAdvertising->start();
@@ -169,21 +198,55 @@ class PowerCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
-      intValue = map(intValue, -255, 255, 0, 10);
-      if (intValue < 10 && intValue > 0) {
-          vesc.setCurrent(intValue);
-      }
+      float current = float(map(intValue, -255, 255, -950, 950));
+      float floatValue = float(map(intValue, -255, 255, -5000, 5000));
+      vesc.setBrakeCurrent(current / 100);
+      //vesc.setDuty(current / 1000);
     }
   }
 };
 
+void notify_package(struct notify_package &msg) {
+  if (deviceConnected) {
+    pPowerCharTx->setValue((uint8_t *)&msg, sizeof(msg));
+    pPowerCharTx->notify();
+    delay(100);
+  }
+}
+
 // VESC
 void send_vesc_values() {
-  int len = sizeof(vesc.data);
-  if (deviceConnected) {
-    pPowerCharTx->setValue((uint8_t *)&vesc.data, len);
-    pPowerCharTx->notify();
-  }
+  struct notify_package msg;
+
+  msg.id = VESC_DATA_1;
+  msg.floats.value1 = vesc.data.avgMotorCurrent;
+  msg.floats.value2 = vesc.data.avgInputCurrent;
+  msg.floats.value3 = vesc.data.dutyCycleNow;
+  msg.floats.value4 = vesc.data.rpm;
+
+  notify_package(msg);
+
+  msg.id = VESC_DATA_2;
+  msg.floats.value1 = vesc.data.inpVoltage;
+  msg.floats.value2 = vesc.data.ampHours;
+  msg.floats.value3 = vesc.data.ampHoursCharged;
+  msg.floats.value4 = vesc.data.wattHours;
+
+  notify_package(msg);
+
+  msg.id = VESC_DATA_3;
+  msg.mixed.value1 = vesc.data.wattHoursCharged;
+  msg.mixed.value2 = vesc.data.tachometer;
+  msg.mixed.value3 = vesc.data.tachometerAbs;
+  msg.mixed.value4 = vesc.data.tempMosfet;
+
+  notify_package(msg);
+
+  msg.id = VESC_DATA_4;
+  msg.floats.value1 = vesc.data.tempMotor;
+  msg.floats.value2 = vesc.data.pidPos;
+
+  notify_package(msg);
 }
 
 void setup() {
@@ -247,12 +310,10 @@ void setup() {
   pAdvertising->start();
 }
 
-int count = 0;
-
 void loop() {
   // Get vesc values via uart and send them via ble
   if (vesc.getVescValues()) {
     send_vesc_values();
   }
-  delay(3);
+  // count++;
 }
