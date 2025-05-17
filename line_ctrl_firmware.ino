@@ -77,41 +77,69 @@ enum Pins {
   M2_LPWM = 18,
   M1_EN = 19,
   M2_EN = 5,
+
+  // Microswitches indicating end of travel.
+  // There is only one pin for both end switches.
+  // You need to remember the current direction to
+  // identify which switch hit.
+  M1_LIMIT = 27,
+  M2_LIMIT = 25,
 };
 
 
 // Just keep current movement settings in global variables
 struct state {
   bool forward;
+  bool limit;
   int16_t speed;
 } motors[2];
 
 void set_speed_forward_m1(int16_t new_speed) {
-  motors[0].forward = true;
-  motors[0].speed = new_speed;
-  ledcWrite(M1_BWD_CH, 0);
-  ledcWrite(M1_FWD_CH, new_speed);
+  if (!(motors[0].limit && motors[0].forward)) {
+    motors[0].forward = true;
+    motors[0].speed = new_speed;
+    if (new_speed) {
+      motors[0].limit = false;
+    }
+    ledcWrite(M1_BWD_CH, 0);
+    ledcWrite(M1_FWD_CH, new_speed);
+  }
 }
 
 void set_speed_backward_m1(int16_t new_speed) {
-  motors[0].forward = false;
-  motors[0].speed = new_speed;
-  ledcWrite(M1_FWD_CH, 0);
-  ledcWrite(M1_BWD_CH, new_speed);
+  if (!(motors[0].limit && !motors[0].forward)) {
+    motors[0].forward = false;
+    motors[0].speed = new_speed;
+    if (new_speed) {
+      motors[0].limit = false;
+    }
+    ledcWrite(M1_FWD_CH, 0);
+    ledcWrite(M1_BWD_CH, new_speed);
+  }
 }
 
 void set_speed_forward_m2(int16_t new_speed) {
-  motors[1].forward = true;
-  motors[1].speed = new_speed;
-  ledcWrite(M2_BWD_CH, 0);
-  ledcWrite(M2_FWD_CH, new_speed);
+  if (!(motors[1].limit && motors[1].forward)) {
+    motors[1].forward = true;
+    motors[1].speed = new_speed;
+    if (new_speed) {
+      motors[1].limit = false;
+    }
+    ledcWrite(M2_BWD_CH, 0);
+    ledcWrite(M2_FWD_CH, new_speed);
+  }
 }
 
 void set_speed_backward_m2(int16_t new_speed) {
-  motors[1].forward = false;
-  motors[1].speed = new_speed;
-  ledcWrite(M2_FWD_CH, 0);
-  ledcWrite(M2_BWD_CH, new_speed);
+  if (!(motors[1].limit && !motors[1].forward)) {
+    motors[1].forward = false;
+    motors[1].speed = new_speed;
+    if (new_speed) {
+      motors[1].limit = false;
+    }
+    ledcWrite(M2_FWD_CH, 0);
+    ledcWrite(M2_BWD_CH, new_speed);
+  }
 }
 
 
@@ -267,6 +295,11 @@ void setup() {
   ledcAttachPin(M1_LPWM, M1_BWD_CH);
   ledcAttachPin(M2_RPWM, M2_FWD_CH);
   ledcAttachPin(M2_LPWM, M2_BWD_CH);
+  // Configure travel limit switch interrupts.
+  pinMode(M1_LIMIT, INPUT_PULLUP);
+  pinMode(M2_LIMIT, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(M1_LIMIT), motor1_limit, RISING);
+  attachInterrupt(digitalPinToInterrupt(M2_LIMIT), motor2_limit, RISING);
 
   full_stop();
 
@@ -308,6 +341,18 @@ void setup() {
 
   BLEAdvertising *pAdvertising = pServer->getAdvertising();
   pAdvertising->start();
+}
+
+void motor1_limit() {
+  motors[0].limit = true;
+  motors[0].speed = 0;
+  full_stop_m1();
+}
+
+void motor2_limit() {
+  motors[1].limit = true;
+  motors[1].speed = 0;
+  full_stop_m2();
 }
 
 void loop() {
