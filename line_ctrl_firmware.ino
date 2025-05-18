@@ -89,13 +89,17 @@ enum Pins {
 
 // Just keep current movement settings in global variables
 struct state {
-  bool forward;
+  volatile bool forward;
   volatile bool limit;
   int16_t speed;
 } motors[2];
 
 void set_speed_forward_m1(int16_t new_speed) {
-  if (!(motors[0].limit && motors[0].forward)) {
+  if(!motors[0].forward){
+    motors[0].forward = true;
+    motors[0].limit = false;
+  }
+  if (!motors[0].limit) {
     motors[0].forward = true;
     motors[0].speed = new_speed;
     ledcWrite(M1_BWD_CH, 0);
@@ -104,7 +108,11 @@ void set_speed_forward_m1(int16_t new_speed) {
 }
 
 void set_speed_backward_m1(int16_t new_speed) {
-  if (!(motors[0].limit && !motors[0].forward)) {
+  if (motors[0].forward) {
+    motors[0].limit = false;
+    motors[0].forward = false;
+  }
+  if (!motors[0].limit) {
     motors[0].forward = false;
     motors[0].speed = new_speed;
     ledcWrite(M1_FWD_CH, 0);
@@ -113,7 +121,11 @@ void set_speed_backward_m1(int16_t new_speed) {
 }
 
 void set_speed_forward_m2(int16_t new_speed) {
-  if (!(motors[1].limit && motors[1].forward)) {
+  if (!motors[1].forward) {
+    motors[1].limit = false;
+    motors[1].forward = true;
+  }
+  if (!motors[1].limit) {
     motors[1].forward = true;
     motors[1].speed = new_speed;
     ledcWrite(M2_BWD_CH, 0);
@@ -122,7 +134,11 @@ void set_speed_forward_m2(int16_t new_speed) {
 }
 
 void set_speed_backward_m2(int16_t new_speed) {
-  if (!(motors[1].limit && !motors[1].forward)) {
+  if (motors[1].forward) {
+    motors[1].limit = false;
+    motors[1].forward = false;
+  }
+  if (!motors[1].limit) {
     motors[1].forward = false;
     motors[1].speed = new_speed;
     ledcWrite(M2_FWD_CH, 0);
@@ -286,8 +302,8 @@ void setup() {
   // Configure travel limit switch interrupts.
   pinMode(M1_LIMIT, INPUT_PULLUP);
   pinMode(M2_LIMIT, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(M1_LIMIT), motor1_limit, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(M2_LIMIT), motor2_limit, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(M1_LIMIT), motor1_limit, RISING);
+  attachInterrupt(digitalPinToInterrupt(M2_LIMIT), motor2_limit, RISING);
 
   full_stop();
 
@@ -332,21 +348,13 @@ void setup() {
 }
 
 void motor1_limit() {
-  if (motors[0].limit) {
-    motors[0].limit = false;
-  } else {
-    motors[0].limit = true;
-    full_stop_m1();
-  }
+  motors[0].limit = true;
+  full_stop_m1();
 }
 
 void motor2_limit() {
-  if (motors[1].limit) {
-    motors[1].limit = false;
-  } else {
-    motors[1].limit = true;
-    full_stop_m2();
-  }
+  motors[1].limit = true;
+  full_stop_m2();
 }
 
 void loop() {
