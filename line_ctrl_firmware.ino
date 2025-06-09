@@ -94,8 +94,10 @@ struct state {
   int16_t speed;
 } motors[2];
 
+// Set steering motors speed, when not limited
+// Reset limit on direction changes
 void set_speed_forward_m1(int16_t new_speed) {
-  if(!motors[0].forward){
+  if (!motors[0].forward) {
     motors[0].forward = true;
     motors[0].limit = false;
   }
@@ -163,8 +165,8 @@ void full_stop_m2() {
   ledcWrite(M2_FWD_CH, 0);
   ledcWrite(M2_BWD_CH, 0);
 }
-// BLE
 
+// Bluetooth callbacks
 bool deviceConnected = false;
 BLECharacteristic *pPowerCharTx = NULL;
 
@@ -186,6 +188,8 @@ class MotorRightCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
+      /*Serial.print("Right: ");
+      Serial.println(intValue);*/
       if (intValue < 0) {
         set_speed_backward_m1(-intValue);
       } else {
@@ -200,6 +204,8 @@ class MotorLeftCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
+      /*Serial.print("Left: ");
+      Serial.println(intValue);*/
       if (intValue < 0) {
         set_speed_backward_m2(-intValue);
       } else {
@@ -211,16 +217,45 @@ class MotorLeftCallbacks : public BLECharacteristicCallbacks {
 
 class SteeringCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
-    String value = pCharacteristic->getValue().c_str();
-    if (value.length() > 0) {
-      int intValue = value.toInt();
-      if (intValue < 0) {
-        set_speed_backward_m1(-intValue);
-        set_speed_forward_m2(-intValue);
+    // Get the value as std::string, which can handle embedded nulls
+    std::string received_std_string = pCharacteristic->getValue();
+
+    // Get a pointer to the raw byte data
+    const uint8_t *value_data = (const uint8_t *)received_std_string.data();
+    // Get the actual length of the received data
+    size_t value_length = received_std_string.length();
+
+    if (value_length >= 4) {
+      // Access bytes using the value_data pointer and value_length
+      uint16_t temp_steering_unsigned = (uint16_t)(((uint16_t)value_data[1] << 8) | value_data[0]);
+      int16_t steering = (int16_t)temp_steering_unsigned;
+
+      uint16_t temp_power_unsigned = (uint16_t)(((uint16_t)value_data[3] << 8) | value_data[2]);
+      int16_t power = (int16_t)temp_power_unsigned;
+
+      /*Serial.print("Steering: ");
+      Serial.println(steering);
+      Serial.print("Power: ");
+      Serial.println(power);*/
+      // apply steering
+      if (steering < 0) {
+        set_speed_backward_m1(-steering);
+        set_speed_forward_m2(-steering);
       } else {
-        set_speed_forward_m1(intValue);
-        set_speed_backward_m2(intValue);
+        set_speed_forward_m1(steering);
+        set_speed_backward_m2(steering);
       }
+      // apply power
+      float current = float(map(power, -255, 255, -950, 950));
+      float floatValue = float(map(power, -255, 255, -5000, 5000));
+      if (power < 0) {
+        vesc.setBrakeCurrent(current / 100);
+      } else {
+        vesc.setDuty(current / 1000);
+      }
+    } else {
+      /*Serial.print("Error: Expected 4 bytes, but got ");
+      Serial.println(value_length);*/
     }
   }
 };
@@ -230,6 +265,8 @@ class PowerCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
+      /*Serial.println("Power: ");
+      Serial.print(intValue);*/
       float current = float(map(intValue, -255, 255, -950, 950));
       float floatValue = float(map(intValue, -255, 255, -5000, 5000));
       vesc.setBrakeCurrent(current / 100);
@@ -239,10 +276,12 @@ class PowerCallbacks : public BLECharacteristicCallbacks {
 };
 
 void notify_package(struct notify_package &msg) {
-  if (deviceConnected) {
+  static unsigned long last_notify_time = 0;
+  unsigned long notify_time = millis();
+  if (deviceConnected && (notify_time - last_notify_time > 100)) {
     pPowerCharTx->setValue((uint8_t *)&msg, sizeof(msg));
     pPowerCharTx->notify();
-    delay(100);
+    last_notify_time = notify_time;
   }
 }
 
@@ -281,6 +320,27 @@ void send_vesc_values() {
   notify_package(msg);
 }
 
+// Interrupt callbacks
+void motor1_limit() {
+  static unsigned long last_interrupt_time1 = 0;
+  unsigned long interrupt_time = millis();
+  if (interrupt_time - last_interrupt_time1 > 500) {
+    motors[0].limit = true;
+    full_stop_m1();
+    last_interrupt_time1 = interrupt_time;
+  }
+}
+
+void motor2_limit() {
+  static unsigned long last_interrupt_time2 = 0;
+  unsigned long interrupt_time = millis();
+  if (interrupt_time - last_interrupt_time2 > 500) {
+    motors[1].limit = true;
+    full_stop_m2();
+    last_interrupt_time2 = interrupt_time;
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial) { ; }
@@ -307,7 +367,7 @@ void setup() {
 
   full_stop();
 
-  // bluetooth
+  // Bluetooth
   BLEDevice::init("LineCtrl");
   BLEServer *pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
@@ -318,7 +378,6 @@ void setup() {
     MOTORRIGHTCHAR_UUID,
     BLECharacteristic::PROPERTY_WRITE);
 
-
   BLECharacteristic *pMotorLeftChar = pService->createCharacteristic(
     MOTORLEFTCHAR_UUID,
     BLECharacteristic::PROPERTY_WRITE);
@@ -326,7 +385,6 @@ void setup() {
   BLECharacteristic *pSteeringChar = pService->createCharacteristic(
     STEERINGCHAR_UUID,
     BLECharacteristic::PROPERTY_WRITE);
-
 
   BLECharacteristic *pPowerCharRx = pService->createCharacteristic(
     POWERCHAR_RX_UUID,
@@ -347,20 +405,10 @@ void setup() {
   pAdvertising->start();
 }
 
-void motor1_limit() {
-  motors[0].limit = true;
-  full_stop_m1();
-}
-
-void motor2_limit() {
-  motors[1].limit = true;
-  full_stop_m2();
-}
-
 void loop() {
   // Get vesc values via uart and send them via ble
+
   if (vesc.getVescValues()) {
     send_vesc_values();
   }
-  // count++;
 }
