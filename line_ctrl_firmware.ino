@@ -11,12 +11,19 @@
 #define STEERINGCHAR_UUID "0058545f-5f5f-5f52-4148-435245574f53"
 #define POWERCHAR_RX_UUID "0058545f-5f5f-5f52-4148-435245574f54"  // MotorMain
 #define POWERCHAR_TX_UUID "0058545f-5f5f-5f52-4148-435245574f55"  // POWERCHAR____TX
+#define DEBOUNCE_MILLIS 250                                       // Limit buttons debounce time
+
+volatile unsigned long last_interrupt_time1 = 0;
+volatile unsigned long last_interrupt_time2 = 0;
+volatile bool motor1_limit_action_pending = false;
+volatile bool motor2_limit_action_pending = false;
 
 enum identifier {
   VESC_DATA_1 = 0,
   VESC_DATA_2 = 1,
   VESC_DATA_3 = 2,
   VESC_DATA_4 = 3,
+  MOTOR_STATE = 4,
 };
 
 struct vesc_data_floats {
@@ -33,12 +40,22 @@ struct vesc_data_mixed {
   float value4;
 };
 
+struct motor_state {
+  bool m1_forward;
+  bool m1_limit;
+  bool m2_forward;
+  bool m2_limit;
+  int16_t m1_speed;
+  int16_t m2_speed;
+};
+
 // Data Packages for VESC data that fits the 20 byte notify payload.
 struct notify_package {
   identifier id;
   union {
     vesc_data_floats floats;
     vesc_data_mixed mixed;
+    struct motor_state motor_state;
   };
 };
 
@@ -188,8 +205,8 @@ class MotorRightCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
-      /*Serial.print("Right: ");
-      Serial.println(intValue);*/
+      // Serial.print("Right: ");
+      // Serial.println(intValue);
       if (intValue < 0) {
         set_speed_backward_m1(-intValue);
       } else {
@@ -204,8 +221,8 @@ class MotorLeftCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
-      /*Serial.print("Left: ");
-      Serial.println(intValue);*/
+      // Serial.print("Left: ");
+      // Serial.println(intValue);
       if (intValue < 0) {
         set_speed_backward_m2(-intValue);
       } else {
@@ -217,26 +234,20 @@ class MotorLeftCallbacks : public BLECharacteristicCallbacks {
 
 class SteeringCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
-    // Get the value as std::string, which can handle embedded nulls
     std::string received_std_string = pCharacteristic->getValue();
-
-    // Get a pointer to the raw byte data
     const uint8_t *value_data = (const uint8_t *)received_std_string.data();
-    // Get the actual length of the received data
     size_t value_length = received_std_string.length();
 
     if (value_length >= 4) {
-      // Access bytes using the value_data pointer and value_length
       uint16_t temp_steering_unsigned = (uint16_t)(((uint16_t)value_data[1] << 8) | value_data[0]);
       int16_t steering = (int16_t)temp_steering_unsigned;
 
       uint16_t temp_power_unsigned = (uint16_t)(((uint16_t)value_data[3] << 8) | value_data[2]);
       int16_t power = (int16_t)temp_power_unsigned;
-
-      /*Serial.print("Steering: ");
-      Serial.println(steering);
-      Serial.print("Power: ");
-      Serial.println(power);*/
+      // Serial.print("Steering: ");
+      // Serial.println(steering);
+      // Serial.print("Power: ");
+      // Serial.println(power);
       // apply steering
       if (steering < 0) {
         set_speed_backward_m1(-steering);
@@ -247,15 +258,14 @@ class SteeringCallbacks : public BLECharacteristicCallbacks {
       }
       // apply power
       float current = float(map(power, -255, 255, -950, 950));
-      float floatValue = float(map(power, -255, 255, -5000, 5000));
       if (power < 0) {
         vesc.setBrakeCurrent(current / 100);
       } else {
         vesc.setDuty(current / 1000);
       }
     } else {
-      /*Serial.print("Error: Expected 4 bytes, but got ");
-      Serial.println(value_length);*/
+      //Serial.print("Error: Expected 4 bytes, but got ");
+      //Serial.println(value_length);
     }
   }
 };
@@ -265,10 +275,10 @@ class PowerCallbacks : public BLECharacteristicCallbacks {
     String value = pCharacteristic->getValue().c_str();
     if (value.length() > 0) {
       int intValue = value.toInt();
-      /*Serial.println("Power: ");
-      Serial.print(intValue);*/
+      // Serial.println("Power: ");
+      // Serial.print(intValue);
       float current = float(map(intValue, -255, 255, -950, 950));
-      float floatValue = float(map(intValue, -255, 255, -5000, 5000));
+      //float floatValue = float(map(intValue, -255, 255, -5000, 5000));
       vesc.setBrakeCurrent(current / 100);
       //vesc.setDuty(current / 1000);
     }
@@ -276,12 +286,10 @@ class PowerCallbacks : public BLECharacteristicCallbacks {
 };
 
 void notify_package(struct notify_package &msg) {
-  static unsigned long last_notify_time = 0;
-  unsigned long notify_time = millis();
-  if (deviceConnected && (notify_time - last_notify_time > 100)) {
+  if (deviceConnected) {
     pPowerCharTx->setValue((uint8_t *)&msg, sizeof(msg));
     pPowerCharTx->notify();
-    last_notify_time = notify_time;
+    delay(100);
   }
 }
 
@@ -316,28 +324,49 @@ void send_vesc_values() {
   msg.id = VESC_DATA_4;
   msg.floats.value1 = vesc.data.tempMotor;
   msg.floats.value2 = vesc.data.pidPos;
+  // still some space left...
+
+  notify_package(msg);
+
+  msg.id = MOTOR_STATE;
+  msg.motor_state.m1_forward = motors[0].forward;
+  msg.motor_state.m1_limit = motors[0].limit;
+  msg.motor_state.m2_forward = motors[1].forward;
+  msg.motor_state.m2_limit = motors[1].limit;
+  msg.motor_state.m1_speed = motors[0].speed;
+  msg.motor_state.m2_speed = motors[1].speed;
 
   notify_package(msg);
 }
 
 // Interrupt callbacks
-void motor1_limit() {
-  static unsigned long last_interrupt_time1 = 0;
+void motor1_limit_isr() {
   unsigned long interrupt_time = millis();
-  if (interrupt_time - last_interrupt_time1 > 500) {
-    motors[0].limit = true;
-    full_stop_m1();
+  if (interrupt_time - last_interrupt_time1 > DEBOUNCE_MILLIS) {
+    motor1_limit_action_pending = true;
     last_interrupt_time1 = interrupt_time;
   }
 }
 
-void motor2_limit() {
-  static unsigned long last_interrupt_time2 = 0;
+void motor1_limit_action() {
+  if (digitalRead(M1_LIMIT) == HIGH) {
+    motors[0].limit = true;
+    full_stop_m1();
+  }
+}
+
+void motor2_limit_isr() {
   unsigned long interrupt_time = millis();
-  if (interrupt_time - last_interrupt_time2 > 500) {
+  if (interrupt_time - last_interrupt_time2 > DEBOUNCE_MILLIS) {
+    motor2_limit_action_pending = true;
+    last_interrupt_time2 = interrupt_time;
+  }
+}
+
+void motor2_limit_action() {
+  if (digitalRead(M2_LIMIT) == HIGH) {
     motors[1].limit = true;
     full_stop_m2();
-    last_interrupt_time2 = interrupt_time;
   }
 }
 
@@ -407,8 +436,9 @@ void setup() {
 
 void loop() {
   // Get vesc values via uart and send them via ble
-
   if (vesc.getVescValues()) {
     send_vesc_values();
   }
+// Detect pending isr actions
+
 }
